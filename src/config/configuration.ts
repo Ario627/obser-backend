@@ -22,7 +22,11 @@ export default () => ({
     pinTtlSeconds: parseInt(process.env.PIN_TTL_SECONDS || '300', 10),
   },
   database: {
-    path: process.env.DATABASE_PATH || './observatory.sqlite',
+    host: process.env.POSTGRES_HOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || '5432'),
+    username: process.env.POSTGRES_USERNAME || 'postgres',
+    password: process.env.POSTGRES_PASSWORD || '',
+    name: process.env.POSTGRES_DATABASE || 'observatory',
   },
   uploads: {
     path: process.env.UPLOADS_PATH || './uploads/captures',
