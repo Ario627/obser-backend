@@ -9,7 +9,7 @@ export enum CelestialType {
 
 export type ServoSpeed = 'slow' | 'normal' | 'fast';
 
-export interface TrakTarget {
+export interface TrackTarget {
   type: CelestialType;
   id: string;
 }
