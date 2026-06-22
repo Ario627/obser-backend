@@ -1,0 +1,10 @@
+import {Module} from '@nestjs/common';
+import { HardwareService } from './hardware.service';
+import { HardwareController } from './hardware.controller';
+
+@Module({
+  controllers: [HardwareController],
+  providers: [HardwareService],
+  exports: [HardwareService],
+})
+export class HardwareModule {}
