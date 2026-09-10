@@ -1,13 +1,13 @@
-import { Module } from "@nestjs/common";
-import { ConfigModule, ConfigService } from "@nestjs/config";
-import { JwtModule } from "@nestjs/jwt";
-import { PassportModule } from "@nestjs/passport";
-import { CacheModule } from "@nestjs/cache-manager";
-import { ThrottlerModule } from "@nestjs/throttler";
-import { EventEmitterModule } from "@nestjs/event-emitter";
-import { AuthService } from "./auth.service";
-import { AuthController } from "./auth.controller";
-import { JwtStrategy } from "./strategies/jwt.strategy";
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
+import type { JwtModuleOptions } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+
+type JwtExpiresIn = NonNullable<JwtModuleOptions['signOptions']>['expiresIn'];
 
 @Module({
   imports: [
@@ -17,20 +17,12 @@ import { JwtStrategy } from "./strategies/jwt.strategy";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('jwt.secret'),
+        secret: configService.getOrThrow<string>('jwt.secret'),
         signOptions: {
-          expiresIn: configService.get<string>('jwt.expiresIn', '24h') as any,
+          expiresIn: configService.get<JwtExpiresIn>('jwt.expiresIn', '24h'),
         },
       }),
     }),
-    CacheModule.register(),
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000,
-        limit: 100,
-      },
-    ]),
-    EventEmitterModule.forRoot(),
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

@@ -11,13 +11,11 @@ import { Capture } from './entities/capture.entity';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        console.log('=== DB CONFIG ===');
         console.log('HOST:', configService.get('DB_HOST'));
         console.log('PORT:', configService.get('DB_PORT'));
         console.log('USER:', configService.get('DB_USERNAME'));
         console.log('PASS:', configService.get('DB_PASSWORD'));
         console.log('NAME:', configService.get('DB_DATABASE'));
-        console.log('=================');
 
         return {
           type: 'postgres',
