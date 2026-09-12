@@ -31,6 +31,10 @@ export class CelestialResponseDto {
   @IsOptional()
   distanceKm!: number | null;
 
+  @IsNumber()
+  @IsOptional()
+  distanceAu!: number | null;
+
   @IsBoolean()
   isVisible!: boolean;
 
@@ -47,6 +51,14 @@ export class CelestialResponseDto {
   @Min(0)
   @Max(180)
   servoAltitude!: number;
+
+  @IsNumber()
+  @IsOptional()
+  azimuthRate!: number | null;
+
+  @IsNumber()
+  @IsOptional()
+  altitudeRate!: number | null;
 
   @IsNumber()
   @IsOptional()

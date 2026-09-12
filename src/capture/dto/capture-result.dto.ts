@@ -1,4 +1,10 @@
-import { IsNumber, IsString, IsOptional, IsISO8601, IsIn } from "class-validator";
+import {
+  IsNumber,
+  IsString,
+  IsOptional,
+  IsISO8601,
+  IsIn,
+} from 'class-validator';
 
 export class CaptureResultDto {
   @IsNumber()
@@ -21,7 +27,7 @@ export class CaptureResultDto {
 
   @IsString()
   @IsIn(['auto', 'manual'])
-  triggerReason!: string;
+  triggerReason!: 'auto' | 'manual';
 
   @IsISO8601()
   timestamp!: string;

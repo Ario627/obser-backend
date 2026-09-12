@@ -11,6 +11,7 @@ import { CaptureModule } from './capture/capture.module';
 import { CelestialModule } from './celestial/celestial.module';
 import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
+import { EventsModule } from './events/events.module';
 import { HardwareModule } from './hardware/hardware.module';
 import { LoraModule } from './lora/lora.module';
 import { MqttModule } from './mqtt/mqtt.module';
@@ -56,6 +57,7 @@ import { MqttModule } from './mqtt/mqtt.module';
     HardwareModule,
     LoraModule,
     CaptureModule,
+    EventsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

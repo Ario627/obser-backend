@@ -1,7 +1,7 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import {PassportStrategy} from '@nestjs/passport';
-import {ExtractJwt, Strategy} from "passport-jwt"
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
 
 interface JwtPayload {
   role: string;
@@ -12,21 +12,31 @@ interface JwtPayload {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly configService: ConfigService) {
+  constructor(configService: ConfigService) {
+    const secret = configService.get<string>('jwt.secret');
+
+    if (!secret) {
+      throw new Error('JWT secret is not configured');
+    }
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.get<string>('jwt.secret')!,
+      secretOrKey: secret,
     });
   }
 
-  async validate(payload: JwtPayload) {
-    if (payload.role !== 'operator')
-      throw new UnauthorizedException('invalid token payload ');
+  async validate(payload: JwtPayload): Promise<Omit<JwtPayload, 'iat' | 'exp'>> {
+    if (payload.role !== 'operator') {
+      throw new UnauthorizedException('Invalid token payload: bad role');
+    }
 
-    return {
-      role: payload.role,
-      deviceId: payload.deviceId,
-    };
+    if (typeof payload.deviceId !== 'string' || payload.deviceId.length === 0) {
+      throw new UnauthorizedException(
+        'Invalid token payload: missing deviceId',
+      );
+    }
+
+    return { role: payload.role, deviceId: payload.deviceId };
   }
 }

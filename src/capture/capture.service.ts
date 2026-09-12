@@ -1,179 +1,185 @@
-import { Injectable, Logger, OnModuleInit, NotFoundException } from "@nestjs/common";
-import { EventEmitter2, OnEvent } from "@nestjs/event-emitter";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
-import { ConfigService } from "@nestjs/config";
-import { Capture } from "src/database/entities/capture.entity";
-import { createReadStream } from "fs";
-import { mkdir, writeFile, access, unlink } from "fs/promises";
-import {join, relative, resolve} from "path";
+import {
+  Logger,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import type {
-  CaptureTriggerPayload,
-  CaptureResultPayload,
   CaptureCompletedPayload,
+  CaptureResultPayload,
+  CaptureTriggerPayload,
   PassInfo,
 } from '../common/types';
-import { CaptureResultDto } from "./dto/capture-result.dto";
-import { CaptureHistoryDto } from "./dto/capture-history.dto";
-import { buffer } from "stream/consumers";
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { createReadStream } from 'node:fs';
+import { access, mkdir, writeFile } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { Capture } from '../database/entities/capture.entity';
+import { EVENTS } from '../common/constant/events.constant';
+import { CaptureHistoryDto } from './dto/capture-history.dto';
+import { CaptureResultDto } from './dto/capture-result.dto';
 
-const JPEG = [0xff, 0xd8, 0xff];
-const MAX_FILE_IMAGE = 2 * 1024 * 1024; // 2MB
-const BASE64_PADDING = /^data:image\/\w+;base64,/;
+const JPEG_MAGIC = [0xff, 0xd8, 0xff];
+const BASE64_PREFIX = /^data:image\/\w+;base64,/;
+const CAPTURE_TIMEOUT_MS = 30_000;
 
 @Injectable()
 export class CaptureService implements OnModuleInit {
   private readonly logger = new Logger(CaptureService.name);
   private readonly uploadPath: string;
+  private readonly resolveUploadPath: string;
   private readonly cooldownMs: number;
-  private readonly resolvedUploadPath: string;
+  private readonly maxImageBytes: number;
 
-  private lastCaptureTime = 0;
-  private captureInProgress = false;
-
-  private pendingReason: 'auto' | 'manual' = 'auto';
-  private pendingObjectName: string | null = null;
-  private pendingAzimuth: number | null = null;
-  private pendingAltitude: number | null = null;
+  private lastCaptureTime: number = 0;
+  private pending: CaptureTriggerPayload | null = null;
 
   constructor(
     @InjectRepository(Capture)
-    private readonly captureRepo: Repository<Capture>,
-    private readonly emitter: EventEmitter2,
+    private readonly catureRepo: Repository<Capture>,
     private readonly config: ConfigService,
+    private readonly emitter: EventEmitter2,
   ) {
     this.uploadPath = this.config.get<string>(
       'upload.path',
       './uploads/captures',
     );
-    this.cooldownMs = this.config.get<number>('capture.cooldownMs', 30000);
-    this.resolvedUploadPath = resolve(this.uploadPath);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await mkdir(this.uploadPath, { recursive: true });
-    this.logger.log(`Capture upload path: ${this.resolvedUploadPath}`);
-  }
-
-  @OnEvent('capture.trigger.requested')
-  async onTriggerRequested(payload: CaptureTriggerPayload): Promise<void> {
-    await this.processCapture(
-      payload.reason,
-      payload.objectName ?? null,
-      payload.azimuth ?? null,
-      payload.altitude ?? null,
+    this.cooldownMs = this.config.get<number>('capture.cooldownMs', 300_000);
+    this.maxImageBytes = this.config.get<number>(
+      'upload.maxImageBytes',
+      2 * 1024 * 1024,
     );
+    this.resolveUploadPath = resolve(this.uploadPath);
   }
 
-  @OnEvent('capture.result.received')
+  async onModuleInit() {
+    await mkdir(this.resolveUploadPath, { recursive: true });
+    this.logger.log(`Capture upload path: ${this.resolveUploadPath}`);
+  }
+
+  @OnEvent(EVENTS.capture.TRIGGER_REQUESTED)
+  async onTriggerRequested(payload: CaptureTriggerPayload): Promise<void> {
+    await this.processCapture(payload);
+  }
+
+  @OnEvent(EVENTS.pass.ALERT_TRIGGERED)
+  async onPassAlert(payload: PassInfo): Promise<void> {
+    await this.processCapture({
+      reason: 'auto',
+      objectName: payload.objectName,
+      azimuth: payload.aosAzimuth ?? 0,
+      altitude: payload.maxAltitude ?? 0,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  @OnEvent(EVENTS.capture.RESULT_RECEIVED)
   async onResultReceived(payload: CaptureResultPayload): Promise<void> {
-    if (!this.captureInProgress) {
-      this.logger.warn(
-        'Capture result received but no capture in progress — ignored',
-      );
+    const pending = this.pending;
+
+    if (!pending) {
+      this.logger.warn('Received capture result but no pending capture');
       return;
     }
 
     try {
-      const buffer = this.decodeBase64Image(payload.imageBase64);
-      this.validateImage(buffer);
+      const image = this.decocedeBase64Image(payload.imageBase64);
+      this.validateImage(image);
 
       const now = new Date();
-      const filename = this.buildFilename(
-        now,
-        payload.triggerReason,
-        this.pendingObjectName,
-      );
+      const filename = this.buildFilename(now, pending);
       const dateFolder = this.buildDateFolder(now);
       const relativePath = join(dateFolder, filename);
+      const folder = this.resolveSavePath(dateFolder);
 
-      const absoluteFolder = this.resolveSafePath(dateFolder);
-      await mkdir(absoluteFolder, { recursive: true });
-      await writeFile(join(absoluteFolder, filename), buffer);
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, filename), image);
 
-      const entity = this.captureRepo.create({
-        filename,
-        filePath: relativePath,
-        triggerReason: payload.triggerReason,
-        objectName: this.pendingObjectName,
-        azimuth: this.pendingAzimuth,
-        altitude: this.pendingAltitude,
-        fileSize: buffer.length,
-        timestamp: now,
-      });
-
-      const saved = await this.captureRepo.save(entity);
-
-      this.lastCaptureTime = Date.now();
-      this.logger.log(
-        `Capture saved: ${relativePath} (${(buffer.length / 1024).toFixed(1)}KB)`,
+      const saved = await this.catureRepo.save(
+        this.catureRepo.create({
+          filename,
+          filePath: relativePath,
+          triggerReason: pending.reason,
+          objectName: pending.objectName ?? null,
+          azimuth: pending.azimuth ?? null,
+          altitude: pending.altitude ?? null,
+          fileSize: image.length,
+          timestamp: now,
+        }),
       );
 
-      const complited: CaptureCompletedPayload = {
+      this.lastCaptureTime = Date.now();
+      this.logger.log(`Capture saved: ${relativePath} (${image.length} bytes)`);
+
+      const completed: CaptureCompletedPayload = {
         id: saved.id,
         filename: saved.filename,
         filePath: saved.filePath,
-        triggerReason: saved.triggerReason as 'auto' | 'manual',
+        triggerReason: pending.reason,
         objectName: saved.objectName,
         azimuth: saved.azimuth,
         altitude: saved.altitude,
         fileSize: saved.fileSize,
-        timestamp:
-          saved.timestamp instanceof Date
-            ? saved.timestamp.toISOString()
-            : saved.timestamp,
+        timestamp: this.toIso(saved.timestamp),
       };
 
-      this.emitter.emit('capture.completed', complited);
+      this.emitter.emit(EVENTS.capture.COMPLETED, completed);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : String(error);
+
       this.logger.error(`Capture processing failed: ${message}`);
-      this.emitter.emit('capture.error', { reason: message });
+      this.emitter.emit(EVENTS.capture.ERROR, { reason: message });
     } finally {
-      this.resetState();
+      this.pending = null;
     }
   }
 
-  @OnEvent('pass.alert.triggered')
-  async onPassAlert(payload: PassInfo): Promise<void> {
-    await this.processCapture(
-      'auto',
-      payload.objectName,
-      null,
-      payload.maxAltitude ?? null,
-    );
+  async requestCapture(): Promise<{ message: string }> {
+    await this.processCapture({
+      reason: 'manual',
+      objectName: null,
+      azimuth: null,
+      altitude: null,
+      timestamp: new Date().toISOString(),
+    });
+    return { message: 'Capture requested' };
   }
 
+  async getHistory(page: number, limit = 20): Promise<CaptureHistoryDto> {
+    const safePage = Math.max(page, 1);
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
 
-  //Public API
-  async requestCapture(): Promise<{message: string}> {
-    await this.processCapture('manual', null, null, null);
-    return { message: 'Capture request sent' };
-  }
-
-  async getHistory(page = 1, limit = 20): Promise<CaptureHistoryDto> {
-    const [rows, total] = await this.captureRepo.findAndCount({
+    const [rows, total] = await this.catureRepo.findAndCount({
       order: { timestamp: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
     });
 
     return {
-      items: rows.map((r) => this.toDto(r)),
+      items: rows.map((row) => this.toDto(row)),
       total,
-      page,
-      limit,
-    }
+      page: safePage,
+      limit: safeLimit,
+    };
   }
 
+  async getImage(
+    id: number,
+  ): Promise<{
+    stream: NodeJS.ReadableStream;
+    mimeType: string;
+    filename: string;
+  }> {
+    const capture = await this.catureRepo.findOne({ where: { id } });
 
-  async getImage(id: number): Promise<{stream: NodeJS.ReadableStream, mimeType: string, filename: string}> {
-    const capture = await this.captureRepo.findOne({ where: { id } });
     if (!capture) {
       throw new NotFoundException(`Capture #${id} not found`);
     }
 
-    const absolutePath = this.resolveSafePath(capture.filePath);
+    const absolutePath = this.resolveSavePath(capture.filePath);
 
     try {
       await access(absolutePath);
@@ -188,119 +194,113 @@ export class CaptureService implements OnModuleInit {
     };
   }
 
-  //Internal
-  private async processCapture(
-    reason: 'auto' | 'manual',
-    objectName: string | null,
-    azimuth: number | null,
-    altitude: number | null,
-  ): Promise<void> {
-    if (this.captureInProgress) {
-      this.logger.warn('Capture already in progess');
-      this.emitter.emit('capture.error', { reason: 'Capture in progress' });
+  private decocedeBase64Image(raw: string): Buffer {
+    if (typeof raw !== 'string' || raw.length === 0) {
+      throw new Error('Invalid base64 image: empty string');
     }
 
-    if (reason === 'auto') {
-      const elapsed = Date.now() - this.lastCaptureTime;
-      if (elapsed < this.cooldownMs) {
-        this.logger.debug(
-          `Auto cacpture cooldown: ${Math.ceil((this.cooldownMs - elapsed) / 1000)}s remaining`,
+    const image = Buffer.from(raw.replace(BASE64_PREFIX, ''), 'base64');
+
+    if (image.length === 0) {
+      throw new Error('Invalid base64 image: decoded buffer is empty');
+    }
+
+    return image;
+  }
+
+  private validateImage(image: Buffer): void {
+    if (
+      image.length < JPEG_MAGIC.length ||
+      !JPEG_MAGIC.every((byte, index) => image[index] === byte)
+    ) {
+      throw new Error('Invalid image: not a JPEG file');
+    }
+
+    if (image.length > this.maxImageBytes)
+      throw new Error(
+        `Invalid image: exceeds max size of ${this.maxImageBytes} bytes`,
+      );
+  }
+
+  private async processCapture(payload: CaptureTriggerPayload): Promise<void> {
+    if (this.pending) {
+      this.logger.warn('Capture already in progress');
+      this.emitter.emit(EVENTS.capture.ERROR, {
+        reason: 'Capture already in progress',
+      });
+      return;
+    }
+
+    if (payload.reason === 'auto') {
+      const elased = Date.now() - this.lastCaptureTime;
+
+      if (elased < this.cooldownMs) {
+        this.logger.warn(
+          `Capture request ignored due to cooldown (${elased}ms elapsed)`,
         );
+        this.emitter.emit(EVENTS.capture.ERROR, {
+          reason: 'Capture request ignored due to cooldown',
+        });
         return;
       }
     }
 
-    this.captureInProgress = true;
-    this.pendingReason = reason;
-    this.pendingObjectName = objectName;
-    this.pendingAzimuth = azimuth;
-    this.pendingAltitude = altitude;
+    this.pending = payload;
 
-    this.emitter.emit('mqtt.publish.requested', {
-      topic: 'observatory/capture/trigger',
-      payload: { reason, timestamp: new Date().toISOString() },
-    });
-
-    this.logger.log(`Capture triggered: reason=${reason}`);
-  }
-
-  private decodeBase64Image(raw: string): Buffer {
-    if (!raw || typeof raw !== 'string')
-      throw new Error('Invalid image data: empty or non-string');
-
-    const cleaned = raw.replace(BASE64_PADDING, '');
-    const buffer = Buffer.from(cleaned, 'base64');
-
-    if (buffer.length === 0)
-      throw new Error('Image corrupted: base64 decode produced empty buffer');
-
-    return buffer;
-  }
-
-  private validateImage(buffer: Buffer): void {
-    if (buffer.length < 3 || !JPEG.every((b, i) => buffer[i] === b))
-      throw new Error('Image corrupted: not a valid JPEG');
-
-    if (buffer.length > MAX_FILE_IMAGE)
-      throw new Error(
-        `Image too large: ${buffer.length} bytes (max ${MAX_FILE_IMAGE})`,
-      );
+    this.emitter.emit(EVENTS.capture.TRIGGER_ACCEPTED, payload);
+    this.logger.log(`Capture triggered: reason=${payload.reason}`);
   }
 
   private buildDateFolder(date: Date): string {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+
+    return `${year}-${month}-${day}`;
   }
 
-  private buildFilename(
-    d: Date,
-    reason: string,
-    objectName: string | null,
-  ): string {
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    const safe = objectName
-      ? objectName.replace(/[^a-zA-Z0-9_-]/g, '_')
-      : 'unknown';
-    return `${hh}-${mm}-${ss}_${reason}_${safe}.jpg`;
+  private buildFilename(date: Date, pending: CaptureTriggerPayload): string {
+    const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
+      .map((part) => String(part).padStart(2, '0'))
+      .join('-');
+
+    const object = (pending.objectName ?? 'unknown').replace(
+      /[^a-zA-Z0-9_-]/g,
+      '_',
+    );
+
+    return `${time}_${pending.reason}_${object}.jpg`;
   }
 
-  private resolveSafePath(subPath: string): string {
-    const absolute = resolve(this.uploadPath, subPath);
-    const rel = relative(this.resolvedUploadPath, absolute);
+  private resolveSavePath(relativePath: string): string {
+    const absolute = resolve(this.uploadPath, relativePath);
+    const rel = relative(this.resolveUploadPath, absolute);
 
     if (
       rel.startsWith('..') ||
-      resolve(this.resolvedUploadPath, subPath) !== absolute
+      resolve(this.resolveUploadPath, relativePath) !== absolute
     ) {
-      throw new Error(`Path traversal blocked: ${subPath}`);
+      throw new Error('Invalid relative path: outside of upload directory');
     }
-    return absolute;
-  }
 
-  private resetState(): void {
-    this.captureInProgress = false;
-    this.pendingObjectName = null;
-    this.pendingAzimuth = null;
-    this.pendingAltitude = null;
+    return absolute;
   }
 
   private toDto(entity: Capture): CaptureResultDto {
     const dto = new CaptureResultDto();
+
     dto.id = entity.id;
     dto.filename = entity.filename;
     dto.objectName = entity.objectName;
     dto.azimuth = entity.azimuth;
     dto.altitude = entity.altitude;
-    dto.triggerReason = entity.triggerReason;
-    dto.timestamp =
-      entity.timestamp instanceof Date
-        ? entity.timestamp.toISOString()
-        : String(entity.timestamp);
-    dto.imageUrl = `/capture/${entity.id}/image`;
+    dto.triggerReason = entity.triggerReason === 'manual' ? 'manual' : 'auto';
+    dto.timestamp = entity.timestamp.toISOString();
+    dto.imageUrl = `/captures/${entity.filename}`;
     return dto;
+  }
+
+  private toIso(value: Date | string): string {
+    return value instanceof Date ? value.toISOString() : String(value);
   }
 }

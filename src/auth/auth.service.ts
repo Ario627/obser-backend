@@ -1,19 +1,27 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  Logger,
-  Inject,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
-import { EVENTS } from 'src/common/constant/events.constant'; 
-import { VerifyPinDto } from './dto/verify-pin.dto';
+import { JwtService } from '@nestjs/jwt';
+import { EVENTS } from '../common/constant/events.constant';
 import { AuthResponseDto } from './dto/auth-response.dto';
+import { VerifyPinDto } from './dto/verify-pin.dto';
 
-const PIN_CACHE_KEY = 'device:pin:active'
+const PIN_CACHE_KEY = 'device:pin:active';
+const ATTEMPT_CACHE_KEY = 'auth:pin:attempts';
+const MAX_ATTEMPTS = 5;
+const ATTEMPT_WINDOW_MS = 300_000;
+
+interface JwtPayload {
+  role: string;
+  deviceId: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -27,16 +35,23 @@ export class AuthService {
   ) {}
 
   @OnEvent(EVENTS.device.PIN_RECEIVED)
-  async handlePinReceived(payload: { pin: string }) {
-    const { pin } = payload;
+  async handlePinReceived(payload: { pin: string }): Promise<void> {
     const ttlSeconds = this.configService.get<number>('jwt.pinTtlSeconds', 300);
 
-    await this.cacheManager.set(PIN_CACHE_KEY, pin, ttlSeconds * 1000);
+    await this.cacheManager.set(PIN_CACHE_KEY, payload.pin, ttlSeconds * 1000);
+    await this.cacheManager.del(ATTEMPT_CACHE_KEY);
 
     this.logger.log(`PIN received from device, cached for ${ttlSeconds}s`);
   }
 
   async verifyPin(dto: VerifyPinDto): Promise<AuthResponseDto> {
+    const attempts = await this.registerAttempt();
+
+    if (attempts > MAX_ATTEMPTS) {
+      this.logger.warn('PIN verification blocked: too many attempts');
+      throw new UnauthorizedException('Too many attempts, wait for a new PIN');
+    }
+
     const storedPin = await this.cacheManager.get<string>(PIN_CACHE_KEY);
 
     if (!storedPin) {
@@ -45,42 +60,47 @@ export class AuthService {
     }
 
     if (storedPin !== dto.pin) {
-      this.logger.warn('PIN verification failed: mismatch');
+      this.logger.warn(
+        `PIN verification failed: mismatch (attempt ${attempts}/${MAX_ATTEMPTS})`,
+      );
       throw new UnauthorizedException('Invalid PIN');
     }
 
-    const expiresIn = this.configService.get<string>('jwt.expiresIn', '24h');
-    const deviceId = 'esp32-001';
+    await this.cacheManager.del(ATTEMPT_CACHE_KEY);
 
-    const payload = {
-      role: 'operator',
-      deviceId,
-    };
+    const expiresIn = this.configService.get<string>('jwt.expiresIn', '24h');
+    const deviceId = this.configService.get<string>(
+      'mqtt.clientIdPrefix',
+      'observatory',
+    );
+
+    const payload: JwtPayload = { role: 'operator', deviceId };
 
     const token = await this.jwtService.signAsync(payload, {
-      expiresIn: expiresIn as any,
+      expiresIn: expiresIn as never,
     });
 
     this.logger.log(`PIN verified, JWT issued for device ${deviceId}`);
 
-    return {
-      token,
-      expiresIn,
-      role: 'operator',
-    };
+    return { token, expiresIn, role: 'operator' };
   }
 
-  async validateToken(
-    token: string,
-  ): Promise<{ role: string; deviceId: string } | null> {
+  async validateToken(token: string): Promise<JwtPayload | null> {
     try {
-      const payload = await this.jwtService.verifyAsync(token);
-      return {
-        role: payload.role,
-        deviceId: payload.deviceId,
-      };
+      const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
+
+      return { role: payload.role, deviceId: payload.deviceId };
     } catch {
       return null;
     }
+  }
+
+  private async registerAttempt(): Promise<number> {
+    const current = await this.cacheManager.get<number>(ATTEMPT_CACHE_KEY);
+    const next = (current ?? 0) + 1;
+
+    await this.cacheManager.set(ATTEMPT_CACHE_KEY, next, ATTEMPT_WINDOW_MS);
+
+    return next;
   }
 }

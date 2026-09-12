@@ -4,23 +4,31 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { WsException } from '@nestjs/websockets';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { WsException } from '@nestjs/websockets';
+import { ExtractJwt } from 'passport-jwt';
 import { Socket } from 'socket.io';
+
+interface JwtPayload {
+  role: string;
+  deviceId: string;
+}
 
 @Injectable()
 export class JwtWsGuard implements CanActivate {
   private readonly logger = new Logger(JwtWsGuard.name);
 
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const client = context.switchToWs().getClient<Socket>();
+    const token = this.extractToken(client);
 
-    const token = 
-        client.handshake.auth?.token ||
-        client.handshake.query?.token ||
-        client.handshake.headers?.authorization?.replace('Bearer ', '');
-
-    if (!token || typeof token !== 'string') {
+    if (!token) {
       this.logger.warn(`WS connection missing token from ${client.id}`);
       throw new WsException({
         message: 'Authentication token required',
@@ -30,22 +38,41 @@ export class JwtWsGuard implements CanActivate {
     }
 
     try {
-      const payload = await new JwtService().verifyAsync(token);
-      client.data.user = payload;
-      return true;
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`WS invalid token from ${client.id}: ${errorMessage}`);
+      const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
+        secret: this.configService.get<string>('jwt.secret'),
+      });
 
-      let message = 'Invalid token';
-      if (err instanceof Error && err.name === 'TokenExpiredError') {
-      }
+      client.data.user = payload;
+
+      return true;
+    } catch (error: unknown) {
+      const reason =
+        error instanceof Error && error.name === 'TokenExpiredError'
+          ? 'Token expired'
+          : 'Invalid token';
+
+      this.logger.warn(`WS rejected ${client.id}: ${reason}`);
 
       throw new WsException({
-        message,
+        message: reason,
         code: 'AUTH_TOKEN_INVALID',
         status: 401,
       });
     }
+  }
+
+  private extractToken(client: Socket): string | null {
+    const fromAuth = client.handshake.auth?.token;
+    if (typeof fromAuth === 'string' && fromAuth.length > 0) return fromAuth;
+
+    const fromQuery = client.handshake.query?.token;
+    if (typeof fromQuery === 'string' && fromQuery.length > 0) return fromQuery;
+
+    const header = client.handshake.headers?.authorization;
+    if (typeof header === 'string' && header.startsWith('Bearer ')) {
+      return header.slice('Bearer '.length);
+    }
+
+    return null;
   }
 }

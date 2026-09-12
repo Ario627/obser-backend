@@ -13,6 +13,21 @@ interface StoredStatus extends types.HardwareStatus {
   isOnline: boolean;
 }
 
+const OFFLINE_STATUS: types.HardwareStatus = {
+  batteryPercent: 0,
+  voltage: 0,
+  solarVoltage: null,
+  temperature: null,
+  humidity: null,
+  servoAzAngle: 0,
+  servoAltAngle: 0,
+  wifiRssi: null,
+  uptimeSeconds: 0,
+  loraEnabled: false,
+  cameraReady: false,
+  timestamp: new Date(0).toISOString(),
+};
+
 const HEARTBEAT_TIMEOUT_MS = 30000;
 const HEARTBEAT_CHECK_INTERVAL_MS = 10000;
 
@@ -59,10 +74,7 @@ export class HardwareService implements OnModuleInit, OnModuleDestroy {
         `voltage=${payload.voltage}V, uptime=${payload.uptimeSeconds}s`,
     );
 
-    this.eventEmitter.emit(
-      EVENTS.hardware.STATUS_UPDATED + ':broadcast',
-      updated,
-    );
+    this.eventEmitter.emit(EVENTS.hardware.STATUS_BROADCAST, updated);
   }
 
   @OnEvent(EVENTS.device.CONNECTED)
@@ -71,7 +83,7 @@ export class HardwareService implements OnModuleInit, OnModuleDestroy {
         if (this.latestStatus) {
             this.latestStatus.isOnline = false;
             this.logger.warn('Device disconnected (via LWT/status topic)');
-            this.eventEmitter.emit(EVENTS.hardware.STATUS_UPDATED + ":broadcast", this.latestStatus);
+            this.eventEmitter.emit(EVENTS.hardware.STATUS_BROADCAST, this.latestStatus);
         }
     } else {
         this.logger.log('Device connected (via LWT/status topic)');
@@ -91,14 +103,20 @@ export class HardwareService implements OnModuleInit, OnModuleDestroy {
           `Device heartbeat timeout: no update for ${(elapsed / 1000).toFixed(0)}s`,
         );
 
-        this.eventEmitter.emit(EVENTS.hardware.STATUS_UPDATED + ":broadcast", this.latestStatus);
+        this.eventEmitter.emit(EVENTS.hardware.STATUS_BROADCAST, this.latestStatus);
 
         this.eventEmitter.emit(EVENTS.device.CONNECTED, {connected: false});
     }
   }
 
   getStatus(): StoredStatus | null {
-    return this.latestStatus ? {...this.latestStatus} : null;
+    if(this.latestStatus) return {...this.latestStatus};
+
+    return {
+      ...OFFLINE_STATUS,
+      lastSeen: new Date(0).toISOString(),
+      isOnline: false,
+    }
   }
 
   isDeviceOnline(): boolean {

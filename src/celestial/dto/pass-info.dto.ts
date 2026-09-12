@@ -2,7 +2,7 @@ import { IsString, IsNumber, IsOptional, IsISO8601 } from 'class-validator';
 
 export class PassInfoDto {
   @IsString()
-  objectName!: string;
+  name!: string;
 
   @IsISO8601()
   @IsOptional()
@@ -14,9 +14,17 @@ export class PassInfoDto {
 
   @IsNumber()
   @IsOptional()
-  duration!: number | null;
+  durationSeconds!: number | null;
 
   @IsNumber()
   @IsOptional()
   maxAltitude!: number | null;
+
+  @IsNumber()
+  @IsOptional()
+  aosAzimuth!: number | null;
+
+  @IsNumber()
+  @IsOptional()
+  losAzimuth!: number | null;
 }

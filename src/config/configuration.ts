@@ -1,12 +1,17 @@
+import { randomBytes } from 'node:crypto';
+
 const parseNumber = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback
-}
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
-const parseBoolean = (value: string | undefined, fallback: boolean): boolean => {
+const parseBoolean = (
+  value: string | undefined,
+  fallback: boolean,
+): boolean => {
   if (value === undefined) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
-}
+};
 
 const parseList = (value: string | undefined, fallback: string[]): string[] => {
   const items = value
@@ -14,12 +19,31 @@ const parseList = (value: string | undefined, fallback: string[]): string[] => {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 
-    return items && items.length > 0 ? items : fallback;
-}
+  return items && items.length > 0 ? items : fallback;
+};
 
 const nodeEnv = process.env.NODE_ENV || 'development';
 const isProduction = nodeEnv === 'production';
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+function resolveJwtSecret(): string {
+  const secret = process.env.JWT_SECRET?.trim();
+
+  if (secret) return secret;
+
+  if (isProduction) {
+    throw new Error('JWT_SECRET must be set when NODE_ENV=production');
+  }
+
+  const ephemeral = randomBytes(48).toString('hex');
+
+  console.warn(
+    '[config] JWT_SECRET is not set; generated an ephemeral development secret. ' +
+      'Tokens will not survive a restart.',
+  );
+
+  return ephemeral;
+}
 
 const configuration = () => ({
   server: {
@@ -56,7 +80,7 @@ const configuration = () => ({
     keepaliveSeconds: parseNumber(process.env.MQTT_KEEPALIVE_SECONDS, 30),
   },
   jwt: {
-    secret: process.env.JWT_SECRET ?? 'default-secret-change-me',
+    secret: resolveJwtSecret(),
     expiresIn: process.env.JWT_EXPIRES_IN ?? '24h',
     pinTtlSeconds: parseNumber(process.env.PIN_TTL_SECONDS, 300),
   },

@@ -118,9 +118,9 @@ export interface ParsedLoraMessage {
 
 export interface CaptureTriggerPayload {
   reason: CaptureReason;
-  objectName?: string;
-  azimuth?: number;
-  altitude?: number;
+  objectName?: string | null;
+  azimuth: number | null;
+  altitude: number | null;
   timestamp: string;
 }
 

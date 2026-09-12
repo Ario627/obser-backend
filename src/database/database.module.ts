@@ -1,34 +1,26 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TrackingLog } from './entities/tracking-log.entity';
-import { LoraMessage } from './entities/lora-message.entity';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { Capture } from './entities/capture.entity';
+import { LoraMessage } from './entities/lora-message.entity';
+import { TrackingLog } from './entities/tracking-log.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        console.log('HOST:', configService.get('DB_HOST'));
-        console.log('PORT:', configService.get('DB_PORT'));
-        console.log('USER:', configService.get('DB_USERNAME'));
-        console.log('PASS:', configService.get('DB_PASSWORD'));
-        console.log('NAME:', configService.get('DB_DATABASE'));
-
-        return {
-          type: 'postgres',
-          host: configService.get<string>('DB_HOST'),
-          port: configService.get<number>('DB_PORT'),
-          username: configService.get<string>('DB_USERNAME'),
-          password: configService.get<string>('DB_PASSWORD'),
-          database: configService.get<string>('DB_DATABASE'),
-          entities: [TrackingLog, LoraMessage, Capture],
-          synchronize: configService.get<string>('NODE_ENV') !== 'production',
-          logging: configService.get<string>('NODE_ENV') === 'development',
-        };
-      },
+      useFactory: (configService: ConfigService) => ({
+        type: 'postgres',
+        host: configService.get<string>('database.host', 'localhost'),
+        port: configService.get<number>('database.port', 5432),
+        username: configService.get<string>('database.username', 'postgres'),
+        password: configService.get<string>('database.password', ''),
+        database: configService.get<string>('database.name', 'observatory'),
+        entities: [TrackingLog, LoraMessage, Capture],
+        synchronize: configService.get<boolean>('database.synchronize', true),
+        logging: configService.get<boolean>('database.logging', false),
+      }),
     }),
     TypeOrmModule.forFeature([TrackingLog, LoraMessage, Capture]),
   ],
